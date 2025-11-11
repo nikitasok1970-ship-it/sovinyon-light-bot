@@ -27,7 +27,7 @@ ADDRESS_GROUPS = {"Совіньйон": "4.2", "Совіньйон 1": "4.2", "�
 
 # Логи
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 
 # === ФУНКЦИИ ===
@@ -232,3 +232,4 @@ def main():
 if name == 'main':
 
     main()
+Fix logger: name to __name__
