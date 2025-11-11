@@ -1,0 +1,1 @@
+worker: python sovinyon_bot.py
