@@ -12,7 +12,7 @@ import matplotlib.dates as mdates
 from io import BytesIO
 import os
 
-# === КОНФИГУРАЦИЯ ===
+# === КОНФИГУРАЦИЯ (БЕЗОПАСНО ДЛЯ RENDER) ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 ADMIN_ID = 205371760
@@ -88,15 +88,15 @@ def create_daily_graph(addr, history):
     if addr not in history or not history[addr]['events']:
         return None
     events = history[addr]['events']
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.set_title(f"Совіньйон: відключення (група 4.2)")
     now = datetime.now()
     recent = [e for e in events if (now - datetime.strptime(e['time'], "%H:%M:%S %d.%m.%Y")) <= timedelta(hours=24)]
     if not recent:
-        plt.close()
         return None
     times = [datetime.strptime(e['time'], "%H:%M:%S %d.%m.%Y") for e in recent]
     status = [1 if 'off' in e else 0 for e in recent]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.set_title(f"Совіньйон: відключення (група 4.2)")
     ax.plot(times, status, 'o-', color='red', linewidth=2, markersize=4)
     ax.fill_between(times, status, alpha=0.3, color='red')
     ax.set_ylim(-0.1, 1.1)
@@ -106,6 +106,7 @@ def create_daily_graph(addr, history):
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     plt.xticks(rotation=45)
     plt.tight_layout()
+
     img = BytesIO()
     plt.savefig(img, format='png', dpi=100, bbox_inches='tight')
     img.seek(0)
@@ -189,25 +190,25 @@ def monitor_dtek():
     save_json(STATE_FILE, prev_state)
     save_json(HISTORY_FILE, history)
 
-# === КОМАНДЫ ===
-async def start(update, context):
+# === КОМАНДЫ (СИНХРОННЫЕ) ===
+def start(update, context):
     keyboard = [[InlineKeyboardButton("Перевірити зараз", callback_data='check_now')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
+    update.message.reply_text(
         'Совіньйон — світло (група 4.2)\nОновлення: кожні 30 секунд',
         reply_markup=reply_markup
     )
 
-async def button_handler(update, context):
+def button_handler(update, context):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     if query.data == 'check_now':
-        await query.edit_message_text('Перевіряю...')
+        query.edit_message_text('Перевіряю...')
         monitor_dtek()
-        await query.edit_message_text('Готово! Див. канал')
+        query.edit_message_text('Готово! Див. канал')
 
 # === ЗАПУСК ===
-async def main():
+def main():
     if not BOT_TOKEN or not CHANNEL_ID:
         logger.error("BOT_TOKEN або CHANNEL_ID не задано!")
         return
@@ -220,12 +221,17 @@ async def main():
     logger.info("БОТ ЗАПУЩЕНО. Моніторинг кожні 30 секунд...")
     monitor_dtek()  # Первая проверка
 
-    # Запуск polling
-    await application.run_polling()
+    # Запуск polling (синхронный)
+    application.run_polling()
+
+    # Мониторинг в фоне (не блокирует)
+    while True:
+        monitor_dtek()
+        time.sleep(CHECK_INTERVAL_SECONDS)
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
+    main()
+
 
 
 
