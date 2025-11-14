@@ -229,9 +229,10 @@ def main():
         monitor_dtek()
         time.sleep(CHECK_INTERVAL_SECONDS)
 
-if name == 'main':
+if __name__ == '__main__':
 
     main()
 logger = logging.getLogger(__name__)
+
 
 
