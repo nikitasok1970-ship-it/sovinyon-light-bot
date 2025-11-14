@@ -1,22 +1,22 @@
 # sovinyon_bot.py
-
 import requests
 from bs4 import BeautifulSoup
 import time
 import json
 import logging
 from datetime import datetime, timedelta
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from io import BytesIO
+import os
 
-# === ТВОИ ДАННЫЕ ===
-BOT_TOKEN = '8582989109:AAGeQWMh5DoJDtdghYiw1e3dwShJAyURfwA'
-CHANNEL_ID = '-1001283473998'          # ТВОЙ КАНАЛ
-ADMIN_ID = 205371760                   # ТВОЙ ID
-CHECK_INTERVAL_SECONDS = 30            # КАЖДЫЕ 30 СЕКУНД
+# === КОНФИГУРАЦИЯ ===
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHANNEL_ID = os.getenv('CHANNEL_ID')
+ADMIN_ID = 205371760
+CHECK_INTERVAL_SECONDS = 30
 STATE_FILE = 'dtek_state.json'
 HISTORY_FILE = 'dtek_history.json'
 BASE_URL = 'https://www.dtek-oem.com.ua/ua/shutdowns'
@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 
-# === ФУНКЦИИ ===
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def parse_time(time_str):
     try:
         return datetime.strptime(time_str.strip(), "%H:%M").time()
@@ -43,7 +43,7 @@ def time_diff(start, end):
     h = total_sec // 3600
     m = (total_sec % 3600) // 60
     s = total_sec % 60
-    return f"{h:02d} годин {m:02d} хвилин {s:02d} секунд"
+    return f"{h:02d}г {m:02d}хв {s:02d}с"
 
 def load_json(file):
     try:
@@ -58,7 +58,7 @@ def save_json(file, data):
 
 def parse_dtek():
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(BASE_URL, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -87,43 +87,51 @@ def parse_dtek():
 def create_daily_graph(addr, history):
     if addr not in history or not history[addr]['events']:
         return None
-    
     events = history[addr]['events']
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.set_title(f"Совіньйон: відключення (група 4.2)")
-
     now = datetime.now()
-    recent = [e for e in events if datetime.strptime(e['time'], "%H:%M:%S") > now - timedelta(hours=24)]
-    
-    times = []
-    status = []
-    for e in recent:
-        t = datetime.strptime(e['time'], "%H:%M:%S")
-        times.append(t)
-        status.append(1 if 'off' in e else 0)
-    
-    if times:
-        ax.plot(times, status, 'o-', color='red', linewidth=2, markersize=4)
-        ax.fill_between(times, status, alpha=0.3, color='red')
-        ax.set_ylim(-0.1, 1.1)
-        ax.set_ylabel('Статус')
-        ax.set_yticks([0, 1])
-        ax.set_yticklabels(['Світло є', 'Відключено'])
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        
-        img = BytesIO()
-        plt.savefig(img, format='png', dpi=100, bbox_inches='tight')
-        img.seek(0)
+    recent = [e for e in events if (now - datetime.strptime(e['time'], "%H:%M:%S %d.%m.%Y")) <= timedelta(hours=24)]
+    if not recent:
         plt.close()
-        return img
+        return None
+    times = [datetime.strptime(e['time'], "%H:%M:%S %d.%m.%Y") for e in recent]
+    status = [1 if 'off' in e else 0 for e in recent]
+    ax.plot(times, status, 'o-', color='red', linewidth=2, markersize=4)
+    ax.fill_between(times, status, alpha=0.3, color='red')
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_ylabel('Статус')
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(['Світло є', 'Відключено'])
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    img = BytesIO()
+    plt.savefig(img, format='png', dpi=100, bbox_inches='tight')
+    img.seek(0)
     plt.close()
-    return None
+    return img
+
+# === ОТПРАВКА ===
+def send_notification(text):
+    try:
+        bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode='HTML')
+        logger.info("Повідомлення в канал")
+    except Exception as e:
+        logger.error(f"Помилка: {e}")
+
+def send_photo_with_caption(caption, photo):
+    try:
+        bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption, parse_mode='HTML')
+        logger.info("Графік відправлено")
+    except Exception as e:
+        logger.error(f"Помилка графіка: {e}")
+
 # === МОНИТОРИНГ ===
 def monitor_dtek():
     current_data = parse_dtek()
     if not current_data:
+        send_notification("ТЕСТ: Бот працює!\nСовіньйон (4.2)\nКожні 30 сек")
         return
 
     prev_state = load_json(STATE_FILE)
@@ -139,40 +147,28 @@ def monitor_dtek():
 
         if addr not in history:
             history[addr] = {'events': []}
-
         events = history[addr]['events']
+
         is_off_now = "Активне" in status or "відключено" in status.lower()
-        current_time = now.strftime("%H:%M:%S")
+        current_time = now.strftime("%H:%M:%S %d.%m.%Y")
 
         message_parts = [f"<b>Світло {addr}</b>", f"<i>Група: {group} (ДТЕК)</i>"]
 
-        if events:
-            last_off = next((e for e in reversed(events) if 'off' in e), None)
-            last_on = next((e for e in reversed(events) if 'on' in e), None)
-            if last_off:
-                off_start = datetime.strptime(last_off['off'], "%H:%M:%S")
-                off_end = now if is_off_now else (datetime.strptime(last_on['on'], "%H:%M:%S") if last_on else now)
-                off_dur = time_diff(off_start, off_end)
-                message_parts.append(f"\n<b>Світла не було:</b>\nз {last_off['off']} по {off_end.strftime('%H:%M:%S')}\nПротягом:\n{off_dur}")
-            if last_on and not is_off_now:
-                on_start = datetime.strptime(last_on['on'], "%H:%M:%S")
-                on_end = now
-                on_dur = time_diff(on_start, on_end)
-                message_parts.append(f"\n<b>Світло було:</b>\nз {last_on['on']} по {current_time}\nПротягом:\n{on_dur}")
+        # История
+        last_off = next((e for e in reversed(events) if 'off' in e), None)
+        last_on = next((e for e in reversed(events) if 'on' in e), None)
 
-        if is_off_now:
-            off_start = datetime.strptime(start_str + ":00", "%H:%M:%S") if parse_time(start_str) else now
+        if last_off and is_off_now:
+            off_start = datetime.strptime(last_off['off'], "%H:%M:%S")
             duration = time_diff(off_start, now)
-            message_parts.append(f"\n<b>Світла немає!</b>\n{addr}\nВідсутнє: {duration}\nВимкнено о {start_str} {now.strftime('%d.%m')}")
-            if not events or events[-1].get('off') != start_str + ":00":
-                events.append({'off': start_str + ":00", 'time': now.strftime("%H:%M:%S")})
-        else:
-            message_parts.append(f"\n<b>Світло є!</b> {addr}")
-            if not events or events[-1].get('on') != end_str + ":00":
-                events.append({'on': end_str + ":00", 'time': now.strftime("%H:%M:%S")})
+            message_parts.append(f"\n<b>Світла немає!</b>\nВідсутнє: {duration}\nВимкнено о {start_str}")
+
+        if last_on and not is_off_now:
+            on_start = datetime.strptime(last_on['on'], "%H:%M:%S")
+            duration = time_diff(on_start, now)
+            message_parts.append(f"\n<b>Світло є!</b>\nУвімкнено о {end_str}\nБуло: {duration}")
 
         message_parts.append(f"\n<i>ДТЕК:</i> {item['type']}\nОновлено: {item['updated']}\nВимкн.: {start_str} | Увімкн.: {end_str}")
-
         full_message = "\n".join(message_parts)
 
         prev_msg = prev_state.get(addr, "")
@@ -184,56 +180,52 @@ def monitor_dtek():
                 send_notification(full_message)
             prev_state[addr] = full_message
 
+        # Запись события
+        if is_off_now and (not events or events[-1].get('off') != start_str + ":00"):
+            events.append({'off': start_str + ":00", 'time': current_time})
+        elif not is_off_now and (not events or events[-1].get('on') != end_str + ":00"):
+            events.append({'on': end_str + ":00", 'time': current_time})
+
     save_json(STATE_FILE, prev_state)
     save_json(HISTORY_FILE, history)
 
-def send_notification(text):
-    try:
-        bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode='HTML')
-        logger.info(f"Повідомлення в канал: {CHANNEL_ID}")
-    except Exception as e:
-        logger.error(f"Помилка: {e}")
-
-def send_photo_with_caption(caption, photo):
-    try:
-        bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption, parse_mode='HTML')
-        logger.info("Графік відправлено")
-    except Exception as e:
-        logger.error(f"Помилка графіка: {e}")
-
 # === КОМАНДЫ ===
-def start(update: Update, context: CallbackContext):
+async def start(update, context):
     keyboard = [[InlineKeyboardButton("Перевірити зараз", callback_data='check_now')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text('Совіньйон — світло (група 4.2)\nОновлення: кожні 30 секунд', reply_markup=reply_markup)
-def button_handler(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        'Совіньйон — світло (група 4.2)\nОновлення: кожні 30 секунд',
+        reply_markup=reply_markup
+    )
+
+async def button_handler(update, context):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     if query.data == 'check_now':
-        query.edit_message_text('Перевіряю...')
+        await query.edit_message_text('Перевіряю...')
         monitor_dtek()
-        query.edit_message_text('Готово! Див. канал')
+        await query.edit_message_text('Готово! Див. канал')
 
 # === ЗАПУСК ===
-def main():
-    u = Updater(BOT_TOKEN)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler('start', start))
-    dp.add_handler(CallbackQueryHandler(button_handler))
-    updater.start_polling()
+async def main():
+    if not BOT_TOKEN or not CHANNEL_ID:
+        logger.error("BOT_TOKEN або CHANNEL_ID не задано!")
+        return
+
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("БОТ ЗАПУЩЕНО. Моніторинг кожні 30 секунд...")
-    monitor_dtek()
+    monitor_dtek()  # Первая проверка
 
-    while True:
-        monitor_dtek()
-        time.sleep(CHECK_INTERVAL_SECONDS)
+    # Запуск polling
+    await application.run_polling()
 
 if __name__ == '__main__':
-
-    main()
-logger = logging.getLogger(__name__)
-
+    import asyncio
+    asyncio.run(main())
 
 
 
