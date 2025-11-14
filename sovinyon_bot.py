@@ -216,7 +216,7 @@ def button_handler(update: Update, context: CallbackContext):
 
 # === ЗАПУСК ===
 def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
+    u = Updater(BOT_TOKEN)
     dp = updater.dispatcher
     dp.add_handler(CommandHandler('start', start))
     dp.add_handler(CallbackQueryHandler(button_handler))
@@ -233,6 +233,7 @@ if __name__ == '__main__':
 
     main()
 logger = logging.getLogger(__name__)
+
 
 
 
